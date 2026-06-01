@@ -8,8 +8,8 @@
 #
 
 CC      = gcc
-CFLAGS  = -Wextra -Wall -Wpedantic -O2 -g -std=c99
-# CFLAGS  = -static -Wextra -Wall -Wpedantic -O2 -g -std=c99
+# CFLAGS  = -Wextra -Wall -Wpedantic -O2 -g -std=c99
+CFLAGS  = -static -Wextra -Wall -Wpedantic -O2 -g -std=c99
 TARGET  = git-whoami
 SRCS    = git-whoami.c
 
@@ -18,11 +18,10 @@ SRCS    = git-whoami.c
 all: $(TARGET)
 
 $(TARGET): $(SRCS)
-	# clang-format -i $^
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o bin/$@ $^
 
 run: $(TARGET)
-	./$(TARGET)
+	./bin/$(TARGET)
 
 clean:
 	rm -f $(TARGET) *.o
