@@ -39,11 +39,11 @@ Insert email
 > onemail@fake.mail
 Would you like to configure a signing key? y(es)/n(o)
 > y
-Select private key
+Enter signing key (GPG fingerprint or SSH public key path)
 > ~/folder_name/file
 ```
 
-Returns `1` on success, `0` on failure.
+Prints `OK` on success, `FAIL` on failure. Returns `0` on success, `1` on failure.
 
 ### List
 
@@ -64,13 +64,13 @@ Apply a saved identity to the current repository using an index or email address
 
 ```bash
 git-whoami switch 2
-1
+OK
 
 git-whoami switch anothermail@fake.mail
-1
+OK
 ```
 
-Returns `1` on success, `0` on failure.
+Prints `OK` on success, `FAIL` on failure. Returns `0` on success, `1` on failure.
 
 ### Delete
 
@@ -78,20 +78,16 @@ Remove an identity from the config file. Does not affect the local Git config.
 
 ```bash
 git-whoami delete 1
-1
+OK
 
 git-whoami delete anothermail@fake.mail
-1
+OK
 
 git-whoami delete fake@mail.com
-0
+FAIL
 ```
 
-Returns `1` on success, `0` if the identity was not found.
-
-## Requirements
-
-- gcc
+Prints `OK` on success, `FAIL` on failure. Returns `0` on success, `1` if the identity was not found.
 
 ## Build
 
