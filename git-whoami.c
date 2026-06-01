@@ -43,7 +43,7 @@ static void strip_tabs(char *s) {
             *w++ = *r;
         r++;
     }
-    *w = '\0';
+    *w = 0;
 }
 
 /**
@@ -135,11 +135,11 @@ static int load_identities(Identity *ids, int *count) {
 
         Identity *id = &ids[*count];
         strncpy(id->name, line, MAX_NAME - 1);
-        id->name[MAX_NAME - 1] = '\0';
+        id->name[MAX_NAME - 1] = 0;
         strncpy(id->email, tab1 + 1, MAX_EMAIL - 1);
-        id->email[MAX_EMAIL - 1] = '\0';
+        id->email[MAX_EMAIL - 1] = 0;
         strncpy(id->signingkey, tab2 + 1, MAX_KEY - 1);
-        id->signingkey[MAX_KEY - 1] = '\0';
+        id->signingkey[MAX_KEY - 1] = 0;
         (*count)++;
     }
 
