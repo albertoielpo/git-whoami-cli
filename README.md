@@ -1,4 +1,4 @@
-# git-whoami-cli
+# Git whoami cli
 
 A CLI tool to manage and switch between multiple Git identities.
 

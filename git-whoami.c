@@ -216,10 +216,12 @@ static int save_identities(const Identity *ids, int count) {
  * @return 0 if the key was found and fits in @p buf, -1 otherwise.
  */
 static int git_config_get(const char *key, char *buf, size_t buflen) {
+    // fds[0] = read end, fds[1] = write end; kernel connects them
     int fds[2];
     if (pipe(fds) != 0)
         return -1;
 
+    // both ends of the pipe exist in both processes after fork
     pid_t pid = fork();
     if (pid < 0) {
         close(fds[0]);
@@ -227,16 +229,19 @@ static int git_config_get(const char *key, char *buf, size_t buflen) {
         return -1;
     }
     if (pid == 0) {
+        // child: redirect stdout into the write end so git's output flows through the pipe
         dup2(fds[1], STDOUT_FILENO);
+        // close the raw fds — stdout is now the alias for fds[1]
         close(fds[0]);
         close(fds[1]);
         const char *args[] = {"git", "config", key, NULL};
         execvp("git", (char *const *)args);
-        // _exit() terminates immediately without flushing or running handlers
-        // safe behavior for forked child
+        // _exit() terminates immediately without flushing or running handlers (forked child)
         _exit(127);
     }
 
+    // parent: close the write end so fgets sees EOF when the child exits;
+    // if left open the read would block forever waiting for a writer that never closes
     close(fds[1]);
     FILE *fp = fdopen(fds[0], "r");
     if (!fp) {
@@ -245,19 +250,23 @@ static int git_config_get(const char *key, char *buf, size_t buflen) {
         return -1;
     }
 
+    // read the first (and only expected) line from git's stdout
     int got = (fgets(buf, (int)buflen, fp) != NULL);
     fclose(fp);
 
+    // reap the child to avoid a zombie; also gives us the exit code
     int status;
     if (waitpid(pid, &status, 0) < 0)
         return -1;
 
+    // strip the trailing newline that git config always appends
     if (got) {
         size_t len = strlen(buf);
         if (len > 0 && buf[len - 1] == '\n')
             buf[len - 1] = 0;
     }
 
+    // treat a missing key (non-zero exit) or empty read as failure
     if (!got || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
         return -1;
 
@@ -276,9 +285,13 @@ static int run_argv(char *const argv[]) {
         return -1;
     }
     if (pid == 0) {
+        // child: replace this process image with the requested command;
+        // stdout is inherited unchanged — output goes straight to the terminal
         execvp(argv[0], argv);
+        // _exit() terminates immediately without flushing or running handlers (forked child)
         _exit(127);
     }
+    // parent: wait for the child and forward its exit code; no output to capture
     int status;
     if (waitpid(pid, &status, 0) < 0)
         return -1;
