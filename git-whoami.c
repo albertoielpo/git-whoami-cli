@@ -406,8 +406,7 @@ static void cmd_list(const Identity *ids, int count) {
  * @return 1 on success, 0 on validation failure or I/O error.
  */
 static int cmd_create(Identity *ids, int *count) {
-    Identity newid;
-    memset(&newid, 0, sizeof(newid));
+    Identity newid = {0};
 
     printf("Insert display name\n> ");
     fflush(stdout);

@@ -1,0 +1,13 @@
+[
+  {
+    "label": "Debug git whoami",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "$ZED_WORKTREE_ROOT/bin/git-whoami",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "build": {
+      "command": "make",
+      "cwd": "$ZED_WORKTREE_ROOT"
+    }
+  }
+]
