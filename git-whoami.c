@@ -23,8 +23,9 @@
 #define MAX_KEY 512
 #define MAX_LINE (MAX_NAME + MAX_EMAIL + MAX_KEY + 4)
 #define MAX_IDENTITIES 128
+#define MAX_PATH_LEN 768
 
-#define VERSION "1.0.1"
+#define VERSION "1.0.2"
 
 typedef struct {
     char name[MAX_NAME];
@@ -57,7 +58,7 @@ static void ensure_config_dir(void) {
         fprintf(stderr, "HOME is not set\n");
         exit(1);
     }
-    char path[768];
+    char path[MAX_PATH_LEN];
     int n = snprintf(path, sizeof(path), "%s/.config", home);
     if (n < 0 || n >= (int)sizeof(path)) {
         fprintf(stderr, "path too long\n");
@@ -105,7 +106,7 @@ static void get_data_path(char *buf, size_t len) {
  * @return 0 on success (including a missing file), -1 on I/O error.
  */
 static int load_identities(Identity *ids, int *count) {
-    char path[768];
+    char path[MAX_PATH_LEN];
     get_data_path(path, sizeof(path));
 
     FILE *fp = fopen(path, "r");
@@ -159,10 +160,10 @@ static int load_identities(Identity *ids, int *count) {
  */
 static int save_identities(const Identity *ids, int count) {
     ensure_config_dir();
-    char path[768];
+    char path[MAX_PATH_LEN];
     get_data_path(path, sizeof(path));
 
-    char tmp[768];
+    char tmp[MAX_PATH_LEN];
     int n = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     if (n < 0 || n >= (int)sizeof(tmp)) {
         fprintf(stderr, "path too long\n");
@@ -231,6 +232,8 @@ static int git_config_get(const char *key, char *buf, size_t buflen) {
         close(fds[1]);
         const char *args[] = {"git", "config", key, NULL};
         execvp("git", (char *const *)args);
+        // _exit() terminates immediately without flushing or running handlers
+        // safe behavior for forked child
         _exit(127);
     }
 
@@ -498,6 +501,45 @@ static int cmd_delete(Identity *ids, int *count, const char *arg) {
 }
 
 /**
+ * @brief print command result. If @p res is > 0 it's considered ok
+ * @param res
+ */
+static void print_cmd_res(int res) {
+    if (res > 0) {
+        printf("OK\n");
+    } else {
+        printf("FAIL\n");
+    }
+}
+
+/**
+ * @brief print help
+ */
+static void print_help(void) {
+    printf("git-whoami v%s\n", VERSION);
+    printf("\nManage multiple git identities (user.name + user.email) and switch between them.\n");
+    printf("\nUSAGE\n");
+    printf("  git-whoami [command] [argument]\n");
+    printf("\nCOMMANDS\n");
+    printf("  (none)               Show the active git identity for the current repository\n");
+    printf("  list,    ls          List all saved identities with their index\n");
+    printf("  create,  c           Interactively create and save a new identity\n");
+    printf("  switch,  s <id>      Switch the current repository to the identity at <index> or <email>\n");
+    printf("  delete,  d <id>      Delete the identity at <index> or <email>\n");
+    printf("  help,    h           Show this help message\n");
+    printf("\nARGUMENTS\n");
+    printf("  <index>              1-based position shown by the list command\n");
+    printf("  <email>              Email address of a saved identity\n");
+    printf("\nEXAMPLES\n");
+    printf("  git whoami                  # show current identity\n");
+    printf("  git whoami list             # list all identities\n");
+    printf("  git whoami create           # add a new identity\n");
+    printf("  git whoami switch 2         # switch to identity #2\n");
+    printf("  git whoami switch a@b.com   # switch by email\n");
+    printf("  git whoami delete 1         # delete identity #1\n");
+}
+
+/**
  * @brief Dispatch a subcommand based on the command-line arguments.
  * @param argc  Argument count as received by main().
  * @param argv  Argument vector as received by main().
@@ -508,52 +550,51 @@ static int cmd_delete(Identity *ids, int *count, const char *arg) {
 static int run(int argc, char *argv[], Identity *ids, int *count) {
     if (argc == 1) {
         cmd_show_current();
-        return 0;
+        return EXIT_SUCCESS;
     }
 
     const char *cmd = argv[1];
 
     if (strcmp(cmd, "h") == 0 || strcmp(cmd, "help") == 0) {
-        printf("git-whoami v%s\n", VERSION);
-        printf("Usage: git-whoami [help|h|list|ls|create|c|switch|s|delete|d <index|email>]\n");
-        return 0;
+        print_help();
+        return EXIT_SUCCESS;
     }
 
     if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "list") == 0) {
         cmd_list(ids, *count);
-        return 0;
+        return EXIT_SUCCESS;
     }
 
-    if (strcmp(cmd, "create") == 0 || strcmp(cmd, "c") == 0) {
-        int r = cmd_create(ids, count);
-        printf("%d\n", r);
-        return r ? 0 : 1;
+    if (strcmp(cmd, "c") == 0 || strcmp(cmd, "create") == 0) {
+        int res = cmd_create(ids, count);
+        print_cmd_res(res);
+        return res ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
-    if (strcmp(cmd, "switch") == 0 || strcmp(cmd, "s") == 0) {
+    if (strcmp(cmd, "s") == 0 || strcmp(cmd, "switch") == 0) {
         if (argc < 3) {
             fprintf(stderr, "Usage: git-whoami switch <index|email>\n");
             return 1;
         }
-        int r = cmd_switch(ids, *count, argv[2]);
-        printf("%d\n", r);
-        return r ? 0 : 1;
+        int res = cmd_switch(ids, *count, argv[2]);
+        print_cmd_res(res);
+        return res ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
-    if (strcmp(cmd, "delete") == 0 || strcmp(cmd, "d") == 0) {
+    if (strcmp(cmd, "d") == 0 || strcmp(cmd, "delete") == 0) {
         if (argc < 3) {
             fprintf(stderr, "Usage: git-whoami delete <index|email>\n");
             return 1;
         }
-        int r = cmd_delete(ids, count, argv[2]);
-        printf("%d\n", r);
-        return r ? 0 : 1;
+        int res = cmd_delete(ids, count, argv[2]);
+        print_cmd_res(res);
+        return res ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     fprintf(stderr, "Unknown command: %s\n", cmd);
     fprintf(stderr, "git-whoami v%s\n", VERSION);
-    fprintf(stderr, "Usage: git-whoami [help|h|list|ls|create|c|switch|s|delete|d <index|email>]\n");
-    return 1;
+    fprintf(stderr, "Usage: git-whoami help\n");
+    return EXIT_FAILURE;
 }
 
 /**
@@ -566,11 +607,11 @@ int main(int argc, char *argv[]) {
     Identity *ids = calloc(MAX_IDENTITIES, sizeof(Identity));
     if (!ids) {
         fprintf(stderr, "out of memory\n");
-        return 1;
+        return EXIT_FAILURE;
     }
     int count = 0;
     load_identities(ids, &count);
-    int rc = run(argc, argv, ids, &count);
+    int exit_value = run(argc, argv, ids, &count);
     free(ids);
-    return rc;
+    return exit_value;
 }
