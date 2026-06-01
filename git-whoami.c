@@ -24,7 +24,7 @@
 #define MAX_LINE (MAX_NAME + MAX_EMAIL + MAX_KEY + 4)
 #define MAX_IDENTITIES 128
 
-#define VERSION "1.0.0"
+#define VERSION "1.0.1"
 
 typedef struct {
     char name[MAX_NAME];
@@ -310,9 +310,19 @@ static int apply_identity(const Identity *id) {
         const char *set_key[] = {"git", "config", "user.signingKey", signingkey, NULL};
         if (run_argv((char *const *)set_key) != 0)
             return -1;
+        const char *set_fmt[] = {"git", "config", "gpg.format", "ssh", NULL};
+        if (run_argv((char *const *)set_fmt) != 0)
+            return -1;
+        const char *set_sign[] = {"git", "config", "commit.gpgsign", "true", NULL};
+        if (run_argv((char *const *)set_sign) != 0)
+            return -1;
     } else {
         const char *unset_key[] = {"git", "config", "--unset", "user.signingKey", NULL};
-        run_argv((char *const *)unset_key); /* ignore — key may not exist */
+        run_argv((char *const *)unset_key);
+        const char *unset_fmt[] = {"git", "config", "--unset", "gpg.format", NULL};
+        run_argv((char *const *)unset_fmt);
+        const char *unset_sign[] = {"git", "config", "--unset", "commit.gpgsign", NULL};
+        run_argv((char *const *)unset_sign);
     }
 
     return 0;
