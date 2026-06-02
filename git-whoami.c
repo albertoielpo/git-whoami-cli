@@ -5,11 +5,12 @@
  * @license MIT
  *
  * Identities (name, email, optional signing key) are stored in
- * ~/.config/git-whoami/data as a tab-separated file and applied to
+ * ~/.config/git-whoami/data as a delimited file and applied to
  * the current repository via `git config`.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,22 +26,29 @@
 #define MAX_IDENTITIES 128
 #define MAX_PATH_LEN 768
 
-#define VERSION "1.0.2"
+// storage file .config/git-whoami/data
+#define STORAGE_CONFIG_NAME ".config"
+#define STORAGE_PRJ_NAME "git-whoami"
+#define STORAGE_FILE_NAME "data"
+#define STORAGE_DELIMITER '|'
+
+#define VERSION "1.1.0"
 
 typedef struct {
     char name[MAX_NAME];
     char email[MAX_EMAIL];
-    char signingkey[MAX_KEY];
+    char signing_key[MAX_KEY];
 } Identity;
 
 /**
- * @brief Strip all tab characters from a string in-place.
+ * @brief Strip all invalid characters from a string in-place.
  * @param s Null-terminated string to sanitize; modified in place.
  */
-static void strip_tabs(char *s) {
+static void sanitize(char *s) {
     char *r = s, *w = s;
     while (*r) {
-        if (*r != '\t')
+        // from space to ~ all chars accepted (except pipe)
+        if (*r >= 32 && *r <= 126 && *r != '|')
             *w++ = *r;
         r++;
     }
@@ -56,26 +64,26 @@ static void ensure_config_dir(void) {
     const char *home = getenv("HOME");
     if (!home) {
         fprintf(stderr, "HOME is not set\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     char path[MAX_PATH_LEN];
-    int n = snprintf(path, sizeof(path), "%s/.config", home);
+    int n = snprintf(path, sizeof(path), "%s/%s", home, STORAGE_CONFIG_NAME);
     if (n < 0 || n >= (int)sizeof(path)) {
         fprintf(stderr, "path too long\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     if (mkdir(path, 0700) != 0 && errno != EEXIST) {
         perror("mkdir");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
-    n = snprintf(path, sizeof(path), "%s/.config/git-whoami", home);
+    n = snprintf(path, sizeof(path), "%s/%s/%s", home, STORAGE_CONFIG_NAME, STORAGE_PRJ_NAME);
     if (n < 0 || n >= (int)sizeof(path)) {
         fprintf(stderr, "path too long\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     if (mkdir(path, 0700) != 0 && errno != EEXIST) {
         perror("mkdir");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -90,12 +98,12 @@ static void get_data_path(char *buf, size_t len) {
     const char *home = getenv("HOME");
     if (!home) {
         fprintf(stderr, "HOME is not set\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
-    int n = snprintf(buf, len, "%s/.config/git-whoami/data", home);
+    int n = snprintf(buf, len, "%s/%s/%s/%s", home, STORAGE_CONFIG_NAME, STORAGE_PRJ_NAME, STORAGE_FILE_NAME);
     if (n < 0 || n >= (int)len) {
         fprintf(stderr, "path too long\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -125,22 +133,22 @@ static int load_identities(Identity *ids, int *count) {
         if (len == 0)
             continue;
 
-        char *tab1 = strchr(line, '\t');
-        if (!tab1)
+        char *del1 = strchr(line, STORAGE_DELIMITER);
+        if (!del1)
             continue;
-        *tab1 = 0;
-        char *tab2 = strchr(tab1 + 1, '\t');
-        if (!tab2)
+        *del1 = 0;
+        char *del2 = strchr(del1 + 1, STORAGE_DELIMITER);
+        if (!del2)
             continue;
-        *tab2 = 0;
+        *del2 = 0;
 
         Identity *id = &ids[*count];
         strncpy(id->name, line, MAX_NAME - 1);
         id->name[MAX_NAME - 1] = 0;
-        strncpy(id->email, tab1 + 1, MAX_EMAIL - 1);
+        strncpy(id->email, del1 + 1, MAX_EMAIL - 1);
         id->email[MAX_EMAIL - 1] = 0;
-        strncpy(id->signingkey, tab2 + 1, MAX_KEY - 1);
-        id->signingkey[MAX_KEY - 1] = 0;
+        strncpy(id->signing_key, del2 + 1, MAX_KEY - 1);
+        id->signing_key[MAX_KEY - 1] = 0;
         (*count)++;
     }
 
@@ -183,8 +191,9 @@ static int save_identities(const Identity *ids, int count) {
         return -1;
     }
 
-    for (int i = 0; i < count; i++) {
-        if (fprintf(fp, "%s\t%s\t%s\n", ids[i].name, ids[i].email, ids[i].signingkey) < 0) {
+    for (int ii = 0; ii < count; ii++) {
+        // example: name|mail|signing_key where | is storage delimiter
+        if (fprintf(fp, "%s%c%s%c%s\n", ids[ii].name, STORAGE_DELIMITER, ids[ii].email, STORAGE_DELIMITER, ids[ii].signing_key) < 0) {
             fclose(fp);
             unlink(tmp);
             return -1;
@@ -231,6 +240,12 @@ static int git_config_get(const char *key, char *buf, size_t buflen) {
     if (pid == 0) {
         // child: redirect stdout into the write end so git's output flows through the pipe
         dup2(fds[1], STDOUT_FILENO);
+        // suppress git's error messages (e.g. "not a git repository") from reaching the terminal
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
         // close the raw fds — stdout is now the alias for fds[1]
         close(fds[0]);
         close(fds[1]);
@@ -302,17 +317,17 @@ static int run_argv(char *const argv[]) {
  * @brief Apply an identity to the current repository's git config.
  *
  * Sets user.name and user.email unconditionally.  If the identity has a
- * signing key it is set; otherwise user.signingKey is unset (errors ignored
+ * signing key it is set; otherwise user.signing_key is unset (errors ignored
  * because the key may not exist).
  *
  * @param id Identity to apply.
  * @return 0 on success, -1 if any required git-config call fails.
  */
 static int apply_identity(const Identity *id) {
-    char name[MAX_NAME], email[MAX_EMAIL], signingkey[MAX_KEY];
+    char name[MAX_NAME], email[MAX_EMAIL], signing_key[MAX_KEY];
     snprintf(name, sizeof(name), "%s", id->name);
     snprintf(email, sizeof(email), "%s", id->email);
-    snprintf(signingkey, sizeof(signingkey), "%s", id->signingkey);
+    snprintf(signing_key, sizeof(signing_key), "%s", id->signing_key);
 
     const char *set_name[] = {"git", "config", "user.name", name, NULL};
     const char *set_email[] = {"git", "config", "user.email", email, NULL};
@@ -322,8 +337,8 @@ static int apply_identity(const Identity *id) {
     if (run_argv((char *const *)set_email) != 0)
         return -1;
 
-    if (signingkey[0] != 0) {
-        const char *set_key[] = {"git", "config", "user.signingKey", signingkey, NULL};
+    if (signing_key[0] != 0) {
+        const char *set_key[] = {"git", "config", "user.signingkey", signing_key, NULL};
         if (run_argv((char *const *)set_key) != 0)
             return -1;
         const char *set_fmt[] = {"git", "config", "gpg.format", "ssh", NULL};
@@ -333,7 +348,7 @@ static int apply_identity(const Identity *id) {
         if (run_argv((char *const *)set_sign) != 0)
             return -1;
     } else {
-        const char *unset_key[] = {"git", "config", "--unset", "user.signingKey", NULL};
+        const char *unset_key[] = {"git", "config", "--unset", "user.signingkey", NULL};
         run_argv((char *const *)unset_key);
         const char *unset_fmt[] = {"git", "config", "--unset", "gpg.format", NULL};
         run_argv((char *const *)unset_fmt);
@@ -363,9 +378,9 @@ static int find_by_arg(const Identity *ids, int count, const char *arg) {
     if (errno != ERANGE && *end == 0 && idx >= 1 && idx <= (long)count) {
         return (int)(idx - 1);
     }
-    for (int i = 0; i < count; i++) {
-        if (strcmp(ids[i].email, arg) == 0)
-            return i;
+    for (int ii = 0; ii < count; ii++) {
+        if (strcmp(ids[ii].email, arg) == 0)
+            return ii;
     }
     return -1;
 }
@@ -386,10 +401,9 @@ static void cmd_show_current(void) {
  * @param count Number of entries in @p ids.
  */
 static void cmd_list(const Identity *ids, int count) {
-    for (int i = 0; i < count; i++) {
-        printf("%d %s %s %s\n",
-               i + 1, ids[i].name, ids[i].email,
-               ids[i].signingkey);
+    for (int ii = 0; ii < count; ii++) {
+        printf("| %d | %s | %s | %s |\n",
+               ii + 1, ids[ii].name, ids[ii].email, ids[ii].signing_key);
     }
 }
 
@@ -415,7 +429,7 @@ static int cmd_create(Identity *ids, int *count) {
     size_t len = strlen(newid.name);
     if (len > 0 && newid.name[len - 1] == '\n')
         newid.name[--len] = 0;
-    strip_tabs(newid.name);
+    sanitize(newid.name);
     if (strlen(newid.name) == 0) {
         fprintf(stderr, "Name cannot be empty\n");
         return 0;
@@ -428,7 +442,7 @@ static int cmd_create(Identity *ids, int *count) {
     len = strlen(newid.email);
     if (len > 0 && newid.email[len - 1] == '\n')
         newid.email[--len] = 0;
-    strip_tabs(newid.email);
+    sanitize(newid.email);
     if (strlen(newid.email) == 0) {
         fprintf(stderr, "Email cannot be empty\n");
         return 0;
@@ -442,25 +456,30 @@ static int cmd_create(Identity *ids, int *count) {
         want_key = (ans[0] == 'y' || ans[0] == 'Y');
         if (!strchr(ans, '\n')) {
             int c;
+            // drains and discards
             while ((c = getchar()) != '\n' && c != EOF)
                 ;
         }
     }
     if (want_key) {
-        printf("Enter signing key (GPG fingerprint or SSH public key path)\n> ");
+        printf("Enter signing key (SSH public key path)\n> ");
         fflush(stdout);
-        if (!fgets(newid.signingkey, sizeof(newid.signingkey), stdin))
+        if (!fgets(newid.signing_key, sizeof(newid.signing_key), stdin))
             return 0;
-        len = strlen(newid.signingkey);
-        if (len > 0 && newid.signingkey[len - 1] == '\n')
-            newid.signingkey[--len] = 0;
-        strip_tabs(newid.signingkey);
+        len = strlen(newid.signing_key);
+        if (len > 0 && newid.signing_key[len - 1] == '\n')
+            newid.signing_key[--len] = 0;
+        sanitize(newid.signing_key);
+        if (strlen(newid.signing_key) == 0) {
+            fprintf(stderr, "Signing key cannot be empty\n");
+            return 0;
+        }
     }
 
     int existing = -1;
-    for (int i = 0; i < *count; i++) {
-        if (strcmp(ids[i].email, newid.email) == 0) {
-            existing = i;
+    for (int ii = 0; ii < *count; ii++) {
+        if (strcmp(ids[ii].email, newid.email) == 0) {
+            existing = ii;
             break;
         }
     }
@@ -506,8 +525,8 @@ static int cmd_delete(Identity *ids, int *count, const char *arg) {
     int idx = find_by_arg(ids, *count, arg);
     if (idx < 0)
         return 0;
-    for (int i = idx; i < *count - 1; i++)
-        ids[i] = ids[i + 1];
+    for (int ii = idx; ii < *count - 1; ii++)
+        ids[ii] = ids[ii + 1];
     (*count)--;
     return save_identities(ids, *count) == 0 ? 1 : 0;
 }
@@ -519,9 +538,9 @@ static int cmd_delete(Identity *ids, int *count, const char *arg) {
 static void print_cmd_res(int res) {
     if (res > 0) {
         printf("OK\n");
-    } else {
-        printf("FAIL\n");
+        return;
     }
+    printf("FAIL\n");
 }
 
 /**
@@ -543,12 +562,13 @@ static void print_help(void) {
     printf("  <index>              1-based position shown by the list command\n");
     printf("  <email>              Email address of a saved identity\n");
     printf("\nEXAMPLES\n");
-    printf("  git whoami                  # show current identity\n");
-    printf("  git whoami list             # list all identities\n");
-    printf("  git whoami create           # add a new identity\n");
-    printf("  git whoami switch 2         # switch to identity #2\n");
-    printf("  git whoami switch a@b.com   # switch by email\n");
-    printf("  git whoami delete 1         # delete identity #1\n");
+    printf("  git-whoami                  # show current identity\n");
+    printf("  git-whoami list             # list all identities\n");
+    printf("  git-whoami create           # add a new identity\n");
+    printf("  git-whoami switch 2         # switch to identity #2\n");
+    printf("  git-whoami switch a@b.com   # switch by email\n");
+    printf("  git-whoami delete 1         # delete identity #1\n");
+    printf("  git-whoami delete a@b.com   # delete by email\n");
 }
 
 /**

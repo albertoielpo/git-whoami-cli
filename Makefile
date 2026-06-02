@@ -13,7 +13,7 @@ CFLAGS  = -static -Wextra -Wall -Wpedantic -O2 -g -std=c99
 TARGET  = git-whoami
 SRCS    = git-whoami.c
 
-.PHONY: all run clean
+.PHONY: all run clean install
 
 all: $(TARGET)
 
@@ -25,3 +25,6 @@ run: $(TARGET)
 
 clean:
 	rm -f $(TARGET) *.o
+
+install:
+	cp ./bin/$(TARGET) ~/.local/bin/$(TARGET)
