@@ -11,6 +11,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,7 +33,7 @@
 #define STORAGE_FILE_NAME "data"
 #define STORAGE_DELIMITER '|'
 
-#define VERSION "1.1.0"
+#define VERSION "1.1.1"
 
 typedef struct {
     char name[MAX_NAME];
@@ -111,16 +112,16 @@ static void get_data_path(char *buf, size_t len) {
  * @brief Load identities from the data file into @p ids.
  * @param ids   Array of at least @c MAX_IDENTITIES entries to populate.
  * @param count Set to the number of identities loaded; 0 if the file is absent.
- * @return 0 on success (including a missing file), -1 on I/O error.
+ * @return true on success (including a missing file)
  */
-static int load_identities(Identity *ids, int *count) {
+static bool load_identities(Identity *ids, int *count) {
     char path[MAX_PATH_LEN];
     get_data_path(path, sizeof(path));
 
     FILE *fp = fopen(path, "r");
     if (!fp) {
         *count = 0;
-        return 0;
+        return true;
     }
 
     char line[MAX_LINE];
@@ -153,7 +154,7 @@ static int load_identities(Identity *ids, int *count) {
     }
 
     fclose(fp);
-    return 0;
+    return true;
 }
 
 /**
@@ -164,9 +165,9 @@ static int load_identities(Identity *ids, int *count) {
  *
  * @param ids   Array of identities to write.
  * @param count Number of entries in @p ids.
- * @return 0 on success, -1 on error.
+ * @return true on success, false on error.
  */
-static int save_identities(const Identity *ids, int count) {
+static bool save_identities(const Identity *ids, int count) {
     ensure_config_dir();
     char path[MAX_PATH_LEN];
     get_data_path(path, sizeof(path));
@@ -175,20 +176,20 @@ static int save_identities(const Identity *ids, int count) {
     int n = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     if (n < 0 || n >= (int)sizeof(tmp)) {
         fprintf(stderr, "path too long\n");
-        return -1;
+        return false;
     }
 
     FILE *fp = fopen(tmp, "w");
     if (!fp) {
         perror("fopen");
-        return -1;
+        return false;
     }
 
     if (fchmod(fileno(fp), 0600) != 0) {
         perror("fchmod");
         fclose(fp);
         unlink(tmp);
-        return -1;
+        return false;
     }
 
     for (int ii = 0; ii < count; ii++) {
@@ -196,21 +197,21 @@ static int save_identities(const Identity *ids, int count) {
         if (fprintf(fp, "%s%c%s%c%s\n", ids[ii].name, STORAGE_DELIMITER, ids[ii].email, STORAGE_DELIMITER, ids[ii].signing_key) < 0) {
             fclose(fp);
             unlink(tmp);
-            return -1;
+            return false;
         }
     }
     if (fclose(fp) != 0) {
         unlink(tmp);
-        return -1;
+        return false;
     }
 
     if (rename(tmp, path) != 0) {
         perror("rename");
         unlink(tmp);
-        return -1;
+        return false;
     }
 
-    return 0;
+    return true;
 }
 
 /**
@@ -222,20 +223,20 @@ static int save_identities(const Identity *ids, int count) {
  * @param key    Git config key (e.g. "user.email").
  * @param buf    Buffer to receive the null-terminated value.
  * @param buflen Size of @p buf in bytes.
- * @return 0 if the key was found and fits in @p buf, -1 otherwise.
+ * @return true if the key was found and fits in @p buf, false otherwise.
  */
-static int git_config_get(const char *key, char *buf, size_t buflen) {
+static bool git_config_get(const char *key, char *buf, size_t buflen) {
     // fds[0] = read end, fds[1] = write end; kernel connects them
     int fds[2];
     if (pipe(fds) != 0)
-        return -1;
+        return false;
 
     // both ends of the pipe exist in both processes after fork
     pid_t pid = fork();
     if (pid < 0) {
         close(fds[0]);
         close(fds[1]);
-        return -1;
+        return false;
     }
     if (pid == 0) {
         // child: redirect stdout into the write end so git's output flows through the pipe
@@ -262,7 +263,7 @@ static int git_config_get(const char *key, char *buf, size_t buflen) {
     if (!fp) {
         close(fds[0]);
         waitpid(pid, NULL, 0);
-        return -1;
+        return false;
     }
 
     // read the first (and only expected) line from git's stdout
@@ -272,7 +273,7 @@ static int git_config_get(const char *key, char *buf, size_t buflen) {
     // reap the child to avoid a zombie; also gives us the exit code
     int status;
     if (waitpid(pid, &status, 0) < 0)
-        return -1;
+        return false;
 
     // strip the trailing newline that git config always appends
     if (got) {
@@ -283,9 +284,9 @@ static int git_config_get(const char *key, char *buf, size_t buflen) {
 
     // treat a missing key (non-zero exit) or empty read as failure
     if (!got || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-        return -1;
+        return false;
 
-    return 0;
+    return true;
 }
 
 /**
@@ -321,9 +322,9 @@ static int run_argv(char *const argv[]) {
  * because the key may not exist).
  *
  * @param id Identity to apply.
- * @return 0 on success, -1 if any required git-config call fails.
+ * @return true on success, false if any required git-config call fails.
  */
-static int apply_identity(const Identity *id) {
+static bool apply_identity(const Identity *id) {
     char name[MAX_NAME], email[MAX_EMAIL], signing_key[MAX_KEY];
     snprintf(name, sizeof(name), "%s", id->name);
     snprintf(email, sizeof(email), "%s", id->email);
@@ -333,20 +334,20 @@ static int apply_identity(const Identity *id) {
     const char *set_email[] = {"git", "config", "user.email", email, NULL};
 
     if (run_argv((char *const *)set_name) != 0)
-        return -1;
+        return false;
     if (run_argv((char *const *)set_email) != 0)
-        return -1;
+        return false;
 
     if (signing_key[0] != 0) {
         const char *set_key[] = {"git", "config", "user.signingkey", signing_key, NULL};
         if (run_argv((char *const *)set_key) != 0)
-            return -1;
+            return false;
         const char *set_fmt[] = {"git", "config", "gpg.format", "ssh", NULL};
         if (run_argv((char *const *)set_fmt) != 0)
-            return -1;
+            return false;
         const char *set_sign[] = {"git", "config", "commit.gpgsign", "true", NULL};
         if (run_argv((char *const *)set_sign) != 0)
-            return -1;
+            return false;
     } else {
         const char *unset_key[] = {"git", "config", "--unset", "user.signingkey", NULL};
         run_argv((char *const *)unset_key);
@@ -356,7 +357,7 @@ static int apply_identity(const Identity *id) {
         run_argv((char *const *)unset_sign);
     }
 
-    return 0;
+    return true;
 }
 
 /**
@@ -390,7 +391,7 @@ static int find_by_arg(const Identity *ids, int count, const char *arg) {
  */
 static void cmd_show_current(void) {
     char email[MAX_EMAIL] = {0};
-    if (git_config_get("user.email", email, sizeof(email)) == 0) {
+    if (git_config_get("user.email", email, sizeof(email))) {
         printf("%s\n", email);
     }
 }
@@ -417,35 +418,35 @@ static void cmd_list(const Identity *ids, int count) {
  *
  * @param ids   Identity array (may be modified).
  * @param count Current identity count; incremented when a new entry is added.
- * @return 1 on success, 0 on validation failure or I/O error.
+ * @return true on success, false on validation failure or I/O error.
  */
-static int cmd_create(Identity *ids, int *count) {
+static bool cmd_create(Identity *ids, int *count) {
     Identity newid = {0};
 
     printf("Insert display name\n> ");
     fflush(stdout);
     if (!fgets(newid.name, sizeof(newid.name), stdin))
-        return 0;
+        return false;
     size_t len = strlen(newid.name);
     if (len > 0 && newid.name[len - 1] == '\n')
         newid.name[--len] = 0;
     sanitize(newid.name);
     if (strlen(newid.name) == 0) {
         fprintf(stderr, "Name cannot be empty\n");
-        return 0;
+        return false;
     }
 
     printf("Insert email\n> ");
     fflush(stdout);
     if (!fgets(newid.email, sizeof(newid.email), stdin))
-        return 0;
+        return false;
     len = strlen(newid.email);
     if (len > 0 && newid.email[len - 1] == '\n')
         newid.email[--len] = 0;
     sanitize(newid.email);
     if (strlen(newid.email) == 0) {
         fprintf(stderr, "Email cannot be empty\n");
-        return 0;
+        return false;
     }
 
     printf("Would you like to configure a signing key? y(es)/n(o)\n> ");
@@ -465,14 +466,14 @@ static int cmd_create(Identity *ids, int *count) {
         printf("Enter signing key (SSH public key path)\n> ");
         fflush(stdout);
         if (!fgets(newid.signing_key, sizeof(newid.signing_key), stdin))
-            return 0;
+            return false;
         len = strlen(newid.signing_key);
         if (len > 0 && newid.signing_key[len - 1] == '\n')
             newid.signing_key[--len] = 0;
         sanitize(newid.signing_key);
         if (strlen(newid.signing_key) == 0) {
             fprintf(stderr, "Signing key cannot be empty\n");
-            return 0;
+            return false;
         }
     }
 
@@ -488,16 +489,16 @@ static int cmd_create(Identity *ids, int *count) {
     } else {
         if (*count >= MAX_IDENTITIES) {
             fprintf(stderr, "Identity limit reached\n");
-            return 0;
+            return false;
         }
         ids[(*count)++] = newid;
     }
 
-    if (save_identities(ids, *count) != 0)
-        return 0;
-    if (apply_identity(&newid) != 0)
-        return 0;
-    return 1;
+    if (!save_identities(ids, *count))
+        return false;
+    if (!apply_identity(&newid))
+        return false;
+    return true;
 }
 
 /**
@@ -505,13 +506,13 @@ static int cmd_create(Identity *ids, int *count) {
  * @param ids   Array of loaded identities.
  * @param count Number of entries in @p ids.
  * @param arg   1-based index or email address identifying the target identity.
- * @return 1 on success, 0 if the identity was not found or could not be applied.
+ * @return true on success, false if the identity was not found or could not be applied.
  */
-static int cmd_switch(const Identity *ids, int count, const char *arg) {
+static bool cmd_switch(const Identity *ids, int count, const char *arg) {
     int idx = find_by_arg(ids, count, arg);
     if (idx < 0)
-        return 0;
-    return apply_identity(&ids[idx]) == 0 ? 1 : 0;
+        return false;
+    return apply_identity(&ids[idx]);
 }
 
 /**
@@ -519,24 +520,24 @@ static int cmd_switch(const Identity *ids, int count, const char *arg) {
  * @param ids   Identity array (modified in place).
  * @param count Current identity count; decremented on success.
  * @param arg   1-based index or email address identifying the entry to remove.
- * @return 1 on success, 0 if the identity was not found or the save failed.
+ * @return true on success, false if the identity was not found or the save failed.
  */
-static int cmd_delete(Identity *ids, int *count, const char *arg) {
+static bool cmd_delete(Identity *ids, int *count, const char *arg) {
     int idx = find_by_arg(ids, *count, arg);
     if (idx < 0)
-        return 0;
+        return false;
     for (int ii = idx; ii < *count - 1; ii++)
         ids[ii] = ids[ii + 1];
     (*count)--;
-    return save_identities(ids, *count) == 0 ? 1 : 0;
+    return save_identities(ids, *count);
 }
 
 /**
- * @brief print command result. If @p res is > 0 it's considered ok
+ * @brief print command result. If @p res is true it's considered ok
  * @param res
  */
-static void print_cmd_res(int res) {
-    if (res > 0) {
+static void print_cmd_res(bool res) {
+    if (res) {
         printf("OK\n");
         return;
     }
@@ -598,7 +599,7 @@ static int run(int argc, char *argv[], Identity *ids, int *count) {
     }
 
     if (strcmp(cmd, "c") == 0 || strcmp(cmd, "create") == 0) {
-        int res = cmd_create(ids, count);
+        bool res = cmd_create(ids, count);
         print_cmd_res(res);
         return res ? EXIT_SUCCESS : EXIT_FAILURE;
     }
@@ -608,7 +609,7 @@ static int run(int argc, char *argv[], Identity *ids, int *count) {
             fprintf(stderr, "Usage: git-whoami switch <index|email>\n");
             return 1;
         }
-        int res = cmd_switch(ids, *count, argv[2]);
+        bool res = cmd_switch(ids, *count, argv[2]);
         print_cmd_res(res);
         return res ? EXIT_SUCCESS : EXIT_FAILURE;
     }
@@ -618,7 +619,7 @@ static int run(int argc, char *argv[], Identity *ids, int *count) {
             fprintf(stderr, "Usage: git-whoami delete <index|email>\n");
             return 1;
         }
-        int res = cmd_delete(ids, count, argv[2]);
+        bool res = cmd_delete(ids, count, argv[2]);
         print_cmd_res(res);
         return res ? EXIT_SUCCESS : EXIT_FAILURE;
     }
